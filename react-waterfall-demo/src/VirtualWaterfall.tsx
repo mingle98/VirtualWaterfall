@@ -67,30 +67,40 @@ function useElementSize(targetRef: React.RefObject<HTMLElement | null>) {
   return { width } as const;
 }
 
-function useElementTop(targetRef: React.RefObject<HTMLElement | null>) {
-  const [top, setTop] = useState(0);
+function useScrollTop() {
+  const [scrollTop, setScrollTop] = useState(0);
+  const rafIdRef = useRef<number | null>(null);
 
   useEffect(() => {
-    const el = targetRef.current;
-    if (!el) return;
-
     const update = () => {
-      const rect = el.getBoundingClientRect();
-      setTop(rect.top);
+      const top = window.pageYOffset || document.documentElement.scrollTop;
+      setScrollTop(top);
     };
 
     update();
 
-    window.addEventListener('scroll', update, { passive: true });
+    // 使用 requestAnimationFrame 来优化性能和确保及时更新
+    const handleScroll = () => {
+      if (rafIdRef.current !== null) {
+        cancelAnimationFrame(rafIdRef.current);
+      }
+      rafIdRef.current = requestAnimationFrame(update);
+    };
+
+    // 监听 window 的滚动事件
+    window.addEventListener('scroll', handleScroll, { passive: true });
     window.addEventListener('resize', update);
 
     return () => {
-      window.removeEventListener('scroll', update);
+      if (rafIdRef.current !== null) {
+        cancelAnimationFrame(rafIdRef.current);
+      }
+      window.removeEventListener('scroll', handleScroll);
       window.removeEventListener('resize', update);
     };
-  }, [targetRef]);
+  }, []);
 
-  return { top } as const;
+  return { scrollTop } as const;
 }
 
 export const VirtualWaterfall = React.forwardRef<VirtualWaterfallHandle<any>, VirtualWaterfallProps<any>>(
@@ -114,7 +124,7 @@ export const VirtualWaterfall = React.forwardRef<VirtualWaterfallHandle<any>, Vi
     const contentRef = useRef<HTMLDivElement | null>(null);
 
     const { width: contentWidth } = useElementSize(contentRef);
-    const { top: contentTop } = useElementTop(contentRef);
+    const { scrollTop } = useScrollTop();
 
     const [columnsTop, setColumnsTop] = useState<number[]>([]);
     const [itemSpaces, setItemSpaces] = useState<VirtualWaterfallItemSpace[]>([]);
@@ -201,23 +211,36 @@ export const VirtualWaterfall = React.forwardRef<VirtualWaterfallHandle<any>, Vi
       if (!length) return [] as VirtualWaterfallItemSpace[];
       if (!virtual) return itemSpaces;
 
-      const parent = contentRef.current?.parentElement;
-      if (!parent) return itemSpaces;
+      const content = contentRef.current;
+      if (!content) {
+        return itemSpaces;
+      }
 
-      const parentTop = parent.offsetTop;
-      const tp = -contentTop + parentTop;
+      // 获取容器相对于文档的偏移量
+      const contentRect = content.getBoundingClientRect();
+      const contentOffsetTop = scrollTop + contentRect.top;
 
       const [topPreloadScreenCount, bottomPreloadScreenCount] = preloadScreenCount;
-      const innerHeight = parent.clientHeight;
+      const viewportHeight = window.innerHeight;
 
-      const minLimit = tp - topPreloadScreenCount * innerHeight;
-      const maxLimit = tp + (bottomPreloadScreenCount + 1) * innerHeight;
+      // 计算可见区域的范围（相对于容器顶部）
+      // scrollTop 是当前滚动位置
+      // contentOffsetTop 是容器距离文档顶部的距离
+      // 可见区域的顶部 = scrollTop - contentOffsetTop
+      const visibleTop = scrollTop - contentOffsetTop;
+      const visibleBottom = visibleTop + viewportHeight;
+
+      // 加上预加载区域
+      const minLimit = visibleTop - topPreloadScreenCount * viewportHeight;
+      const maxLimit = visibleBottom + bottomPreloadScreenCount * viewportHeight;
 
       const result: VirtualWaterfallItemSpace[] = [];
       for (let i = 0; i < length; i++) {
         const v = itemSpaces[i];
         const t = v.top;
         const b = v.bottom;
+        
+        // 判断元素是否在可见区域内（包括预加载区域）
         if (
           (t >= minLimit && t <= maxLimit) ||
           (b >= minLimit && b <= maxLimit) ||
@@ -226,8 +249,24 @@ export const VirtualWaterfall = React.forwardRef<VirtualWaterfallHandle<any>, Vi
           result.push(v);
         }
       }
+      
+      // 调试信息：打印虚拟列表过滤结果
+      if (process.env.NODE_ENV === 'development' && length > 0) {
+        console.log('Virtual List:', {
+          total: length,
+          rendered: result.length,
+          scrollTop,
+          contentOffsetTop,
+          visibleTop,
+          visibleBottom,
+          minLimit,
+          maxLimit,
+          viewportHeight
+        });
+      }
+      
       return result;
-    }, [itemSpaces, virtual, preloadScreenCount, contentTop]);
+    }, [itemSpaces, virtual, preloadScreenCount, scrollTop]);
 
     React.useImperativeHandle(
       ref,
